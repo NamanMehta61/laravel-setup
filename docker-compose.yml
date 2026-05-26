@@ -1,0 +1,183 @@
+networks:
+    bsl:
+        driver: bridge
+volumes:
+    mysql-data:
+        driver: local
+    wp-mysql-data:
+        driver: local
+services:
+    nginx:
+        build:
+            context: .
+            dockerfile: ./docker/nginx/Dockerfile
+        container_name: '${DOCKER_PROJECT_PREFIX}-nginx'
+        ports:
+            - '${DOCKER_NGINX_PORT}:80'
+        volumes:
+
+            - './:/var/www/html:delegated'
+        depends_on:
+            - php
+            - mysql
+        networks:
+            - bsl
+    mysql:
+        image: mysql:8.0
+        container_name: '${DOCKER_PROJECT_PREFIX}-mysql'
+        restart: always
+        environment:
+            MYSQL_ROOT_PASSWORD: rYJtQ5otFh35qS092
+            MYSQL_DATABASE: '${DOCKER_PROJECT_PREFIX}'
+        ports:
+            - '${DOCKER_MYSQL_PORT}:3306'
+        volumes:
+            - 'mysql-data:/var/lib/mysql'
+        networks:
+            - bsl
+    php:
+        build:
+            context: .
+            dockerfile: ./docker/php/Dockerfile
+        container_name: '${DOCKER_PROJECT_PREFIX}-php'
+        volumes:
+            - './:/var/www/html:delegated'
+        ports:
+            - '${DOCKER_PHP_PORT}:9000'
+        networks:
+            - bsl
+    composer:
+        build:
+            context: .
+            dockerfile: ./docker/php/composer/Dockerfile
+        container_name: '${DOCKER_PROJECT_PREFIX}-composer'
+        volumes:
+            - './:/var/www/html'
+        working_dir: /var/www/html
+        depends_on:
+            - php
+        networks:
+            - bsl
+        entrypoint:
+            - composer
+            - '--ignore-platform-reqs'
+    npm:
+        image: node:22.19.0
+        container_name: "${DOCKER_PROJECT_PREFIX}-npm"
+        volumes:
+            - ./:/var/www/html
+        working_dir: /var/www/html
+        entrypoint: ['npm']
+        ports:
+            - "5173:5173"
+        networks:
+            - bsl
+    artisan:
+        build:
+            context: .
+            dockerfile: ./docker/php/Dockerfile
+        container_name: '${DOCKER_PROJECT_PREFIX}-artisan'
+        volumes:
+            - './:/var/www/html:delegated'
+        depends_on:
+            - mysql
+        working_dir: /var/www/html
+        entrypoint:
+            - php
+            - /var/www/html/artisan
+        networks:
+            - bsl
+    reverb:
+        build:
+            context: .
+            dockerfile: ./docker/php/Dockerfile
+        container_name: '${DOCKER_PROJECT_PREFIX}-reverb'
+        working_dir: /var/www/html
+        volumes:
+            - './:/var/www/html'
+        depends_on:
+            - mysql
+            - php
+        expose:
+            - 8080
+        networks:
+            - bsl
+        command: php artisan reverb:start --host=0.0.0.0 --port=8080
+    queue_worker:
+        build:
+            context: .
+            dockerfile: ./docker/php/Dockerfile
+        restart: unless-stopped
+        volumes:
+            - './:/var/www/html:delegated'
+        working_dir: /var/www/html
+        entrypoint:
+            - php
+            - /var/www/html/artisan
+            - 'queue:work'
+            - '--max-jobs=1000'
+        networks:
+            - bsl
+    redis:
+        image: "redis:alpine"
+        container_name: "${DOCKER_PROJECT_PREFIX}-redis"
+        restart: unless-stopped
+        ports:
+            - "${DOCKER_REDIS_PORT}:6379"
+        networks:
+            - bsl
+    cron:
+        build:
+            context: ./docker/php/scheduler/
+            dockerfile: cron.dockerfile
+        container_name: cron
+        volumes:
+            - './:/var/www/html:delegated'
+        networks:
+            - bsl
+
+    # Wordpress for Blog
+
+    mysql_wp:
+        image: mysql:8.0
+        container_name: '${DOCKER_PROJECT_PREFIX}-mysql-wordpress'
+        restart: always
+        ports:
+            - '${DOCKER_WORDPRESS_MYSQL_PORT}:3306'
+        environment:
+            MYSQL_ROOT_PASSWORD: rYJtQ5otFh35qS092
+            MYSQL_DATABASE: '${DOCKER_PROJECT_PREFIX}-wordpress'
+            MYSQL_USER: '${WORDPRESS_DB_USER}'
+            MYSQL_PASSWORD: '${WORDPRESS_DB_PASSWORD}'
+        volumes:
+            - wp-mysql-data:/var/lib/mysql
+        networks:
+            bsl:
+                aliases:
+                    - mysql_wp
+        healthcheck:
+            test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-prYJtQ5otFh35qS092"]
+            interval: 10s
+            timeout: 5s
+            retries: 5
+
+    wordpress:
+        image: wordpress:latest
+        container_name: '${DOCKER_PROJECT_PREFIX}-wordpress'
+        depends_on:
+            mysql_wp:
+                condition: service_healthy   # <-- wait until MySQL is actually ready
+        environment:
+            WORDPRESS_DB_HOST: mysql_wp:3306
+            WORDPRESS_DB_USER: '${WORDPRESS_DB_USER}'
+            WORDPRESS_DB_PASSWORD: '${WORDPRESS_DB_PASSWORD}'
+            WORDPRESS_DB_NAME: '${DOCKER_PROJECT_PREFIX}-wordpress'
+            WORDPRESS_CONFIG_EXTRA: |
+                define('WP_HOME', 'https://digitalfarmer.cloud/blog');
+                define('WP_SITEURL', 'https://digitalfarmer.cloud/blog');
+        ports:
+            - "${DOCKER_WORDPRESS_PORT}:80"
+        volumes:
+            - ./wordpress:/var/www/html
+        networks:
+            - bsl
